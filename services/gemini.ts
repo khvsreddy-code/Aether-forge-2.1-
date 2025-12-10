@@ -17,13 +17,13 @@ export const generateDepthMap = async (imageBase64: string): Promise<string> => 
             },
           },
           {
-            text: "Generate a high-fidelity grayscale depth map. CRITICAL: The background MUST be pure black (#000000). The subject must be clearly separated from the background with sharp edges. Brighter values are closer, darker values are further. Do not change the aspect ratio or composition.",
+            text: "Generate a high-fidelity 16-bit grayscale depth map for this image. CRITICAL INSTRUCTION: The output MUST be identical in resolution and aspect ratio to the source. The background MUST be pure black (#000000). The subject MUST have sharp, pixel-perfect edges separating it from the background. Brighter values are foreground, darker values are background. Do not crop, resize, or alter the composition.",
           },
         ],
       },
       config: {
-        topP: 0.95,
-        temperature: 0.3, 
+        topP: 0.9,
+        temperature: 0.2, // Lower temperature for more deterministic/accurate results
       }
     });
 

@@ -8,7 +8,7 @@ import * as THREE from 'three';
 import { OBJExporter } from 'three-stdlib';
 
 const INITIAL_SETTINGS: ModelSettings = {
-  displacementScale: 1.5, // Stronger default for 3D effect
+  displacementScale: 1.5,
   wireframe: false,
   meshColor: '#ffffff',
   metalness: 0.2,
@@ -20,8 +20,8 @@ function App() {
   const [depthMap, setDepthMap] = useState<string | null>(null);
   const [status, setStatus] = useState<GenerationState>({ status: 'idle' });
   const [settings, setSettings] = useState<ModelSettings>(INITIAL_SETTINGS);
+  const [generationProgress, setGenerationProgress] = useState(0);
   
-  // Reference to the actual THREE.Mesh for exporting
   const meshRef = useRef<THREE.Mesh | null>(null);
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -31,8 +31,9 @@ function App() {
       reader.onload = (event) => {
         if (event.target?.result) {
           setOriginalImage(event.target.result as string);
-          setDepthMap(null); // Reset depth map on new image
+          setDepthMap(null); 
           setStatus({ status: 'idle' });
+          setGenerationProgress(0);
         }
       };
       reader.readAsDataURL(file);
@@ -42,28 +43,34 @@ function App() {
   const processImage = async () => {
     if (!originalImage) return;
 
-    setStatus({ status: 'processing', message: 'Generating voxel geometry with Gemini...' });
+    setStatus({ status: 'processing', message: 'Analyzing structure...' });
+    setGenerationProgress(0);
     
     try {
       const depthData = await generateDepthMap(originalImage);
       setDepthMap(depthData);
-      setStatus({ status: 'success', message: '3D Mesh Constructed!' });
+      setStatus({ status: 'success', message: 'Building 3D Mesh...' }); // Intermediate success before mesh build
     } catch (error) {
-      setStatus({ status: 'error', message: 'Failed to generate 3D structure. Please try again.' });
+      setStatus({ status: 'error', message: 'Failed to generate depth map.' });
     }
   };
 
   const handleDownload = () => {
     if (!meshRef.current) return;
     
+    // Apply current scale to geometry for export
+    // The visual scale is on the mesh object, but exporter might read geometry.
+    // We clone to avoid messing up the view
+    const meshClone = meshRef.current.clone();
+    
     const exporter = new OBJExporter();
-    const result = exporter.parse(meshRef.current);
+    const result = exporter.parse(meshClone);
     
     const blob = new Blob([result], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'model.obj';
+    link.download = 'imagin3d-model.obj';
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -119,7 +126,7 @@ function App() {
                   <div className="relative rounded-lg overflow-hidden border border-slate-700 group">
                      <img src={originalImage} alt="Source" className="w-full h-auto object-cover" />
                      <button 
-                        onClick={() => { setOriginalImage(null); setDepthMap(null); }}
+                        onClick={() => { setOriginalImage(null); setDepthMap(null); setStatus({status:'idle'}); }}
                         className="absolute top-2 right-2 p-1.5 bg-black/60 hover:bg-red-500/80 rounded-full text-white backdrop-blur-sm transition-all opacity-0 group-hover:opacity-100"
                      >
                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
@@ -128,19 +135,21 @@ function App() {
                   
                   <button
                     onClick={processImage}
-                    disabled={status.status === 'processing' || status.status === 'success'}
+                    disabled={status.status === 'processing'}
                     className={`w-full py-3 px-4 rounded-lg font-semibold flex items-center justify-center gap-2 transition-all ${
                         status.status === 'processing' 
                         ? 'bg-slate-700 text-slate-300 cursor-wait'
-                        : status.status === 'success'
+                        : depthMap && generationProgress === 100
                         ? 'bg-green-600/20 text-green-400 border border-green-600/50'
                         : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/20'
                     }`}
                   >
                     {status.status === 'processing' ? (
-                      <><Loader2 className="w-5 h-5 animate-spin" /> Voxelizing...</>
-                    ) : status.status === 'success' ? (
-                      <><Sparkles className="w-5 h-5" /> Mesh Created</>
+                      <><Loader2 className="w-5 h-5 animate-spin" /> {status.message}</>
+                    ) : depthMap && generationProgress < 100 ? (
+                        <><Loader2 className="w-5 h-5 animate-spin" /> Building Mesh {generationProgress}%</>
+                    ) : depthMap && generationProgress === 100 ? (
+                      <><Sparkles className="w-5 h-5" /> Mesh Ready</>
                     ) : (
                       <><Sparkles className="w-5 h-5" /> Generate 3D Mesh</>
                     )}
@@ -150,14 +159,6 @@ function App() {
                      <p className="text-xs text-red-400 text-center bg-red-900/20 p-2 rounded border border-red-900/50">
                         {status.message}
                      </p>
-                  )}
-                  {status.status === 'success' && (
-                     <button 
-                        onClick={() => setStatus({status: 'idle'})} 
-                        className="text-xs text-indigo-400 hover:underline w-full text-center"
-                     >
-                        Regenerate?
-                     </button>
                   )}
                 </div>
               )}
@@ -187,6 +188,7 @@ function App() {
                     depthMap={depthMap} 
                     settings={settings} 
                     onMeshReady={(mesh) => { meshRef.current = mesh; }}
+                    onProgress={setGenerationProgress}
                 />
             ) : (
                 <div className="w-full h-full bg-slate-900 rounded-lg border border-slate-800 flex flex-col items-center justify-center text-slate-500 space-y-4">

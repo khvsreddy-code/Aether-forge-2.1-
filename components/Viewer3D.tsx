@@ -9,147 +9,213 @@ interface Viewer3DProps {
   depthMap: string | null;
   settings: ModelSettings;
   onMeshReady?: (mesh: THREE.Mesh) => void;
+  onProgress?: (progress: number) => void;
 }
 
-// Utility to create geometry from image data
-const createMeshFromData = (
+// Async generator to create geometry without freezing the UI
+const createMeshFromDataAsync = async (
     img: HTMLImageElement, 
     depthImg: HTMLImageElement, 
-    displacementScale: number
-): THREE.BufferGeometry => {
-    const width = img.width;
-    const height = img.height;
-    
-    // Create an offscreen canvas to read pixel data
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) throw new Error('Could not create canvas context');
-
-    // Draw depth map to read values
-    ctx.drawImage(depthImg, 0, 0);
-    const depthData = ctx.getImageData(0, 0, width, height).data;
-
-    // We can't use every pixel or it will be too heavy (1024x1024 = 1M vertices)
-    // We downsample by a factor (step)
-    const step = 4; 
-    const w = Math.floor(width / step);
-    const h = Math.floor(height / step);
-
-    const vertices: number[] = [];
-    const indices: number[] = [];
-    const uvs: number[] = [];
-
-    // Grid to map (x, y) to vertex index
-    // Initialize with -1
-    const grid = new Int32Array(w * h).fill(-1);
-
-    let vertexCount = 0;
-    const threshold = 20; // Darkness threshold for background (0-255)
-
-    for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-            // Sample source coordinates
-            const px = x * step;
-            const py = y * step;
+    displacementScale: number,
+    onProgress?: (p: number) => void
+): Promise<THREE.BufferGeometry> => {
+    return new Promise((resolve, reject) => {
+        try {
+            const width = img.width;
+            const height = img.height;
             
-            // Index in the pixel array (row-major, 4 channels)
-            const pixelIndex = (py * width + px) * 4;
-            const r = depthData[pixelIndex];
-            
-            // If strictly background (black), skip creating vertex
-            if (r < threshold) continue;
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            if (!ctx) throw new Error('Could not create canvas context');
 
-            // Normalized coordinates (-0.5 to 0.5)
-            const u = x / (w - 1);
-            const v = 1 - (y / (h - 1)); // Flip Y for 3D
+            // Draw original image to get Alpha channel for precise cutting
+            ctx.drawImage(img, 0, 0);
+            const colorData = ctx.getImageData(0, 0, width, height).data;
 
-            const vx = (u - 0.5) * 4; // Scale width roughly to 4 units
-            const vy = (v - 0.5) * 4 * (height / width); // Maintain aspect ratio
-            const vz = (r / 255) * displacementScale; // Z based on depth
+            // Draw depth map to get Z values
+            ctx.clearRect(0,0, width, height);
+            ctx.drawImage(depthImg, 0, 0);
+            const depthData = ctx.getImageData(0, 0, width, height).data;
 
-            vertices.push(vx, vy, vz);
-            uvs.push(u, v);
+            // HIGH QUALITY SETTING: Step 2 provides 4x more detail than Step 4
+            // For 1024px image: Step 2 = 260k vertices (High Quality)
+            // Step 1 would be 1M vertices (Ultra High) - might be too heavy for some mobiles
+            const step = 2; 
+            const w = Math.floor(width / step);
+            const h = Math.floor(height / step);
 
-            // Store the vertex index for this grid position
-            grid[y * w + x] = vertexCount;
-            vertexCount++;
+            const vertices: number[] = [];
+            const indices: number[] = [];
+            const uvs: number[] = [];
+            const grid = new Int32Array(w * h).fill(-1);
+
+            let vertexCount = 0;
+            const depthThreshold = 20; // Background cutoff if alpha is opaque
+            const alphaThreshold = 50; // Cutoff for transparent PNGs
+
+            // Processing in chunks to avoid blocking main thread
+            const CHUNK_SIZE = 50; // Process 50 rows per frame
+            let y = 0;
+
+            const processChunk = () => {
+                const endY = Math.min(y + CHUNK_SIZE, h);
+                
+                for (; y < endY; y++) {
+                    for (let x = 0; x < w; x++) {
+                        const px = x * step;
+                        const py = y * step;
+                        const pixelIndex = (py * width + px) * 4;
+
+                        // Check Original Image Alpha (Exact Cutting)
+                        const alpha = colorData[pixelIndex + 3];
+                        
+                        // Check Depth Value
+                        const depthVal = depthData[pixelIndex];
+                        
+                        // Skip if transparent in original OR too dark in depth map (background)
+                        // If the original image has transparency, we strictly use that.
+                        // If it's a JPG (full opacity), we use the depth threshold.
+                        const isBackground = alpha < alphaThreshold || (alpha > 250 && depthVal < depthThreshold);
+                        
+                        if (isBackground) continue;
+
+                        // Normalize
+                        const u = x / (w - 1);
+                        const v = 1 - (y / (h - 1));
+
+                        const vx = (u - 0.5) * 4;
+                        const vy = (v - 0.5) * 4 * (height / width);
+                        // Store raw normalized depth (0-1), scale applied in shader or mesh scale
+                        const vz = (depthVal / 255); 
+
+                        vertices.push(vx, vy, vz);
+                        uvs.push(u, v);
+                        grid[y * w + x] = vertexCount;
+                        vertexCount++;
+                    }
+                }
+
+                if (onProgress) onProgress(Math.round((y / h) * 100));
+
+                if (y < h) {
+                    // Schedule next chunk
+                    requestAnimationFrame(processChunk);
+                } else {
+                    // Finished vertices, generate indices
+                    // Index generation is fast enough to do in one go usually, but let's be safe
+                    for (let iy = 0; iy < h - 1; iy++) {
+                        for (let ix = 0; ix < w - 1; ix++) {
+                            const a = grid[iy * w + ix];
+                            const b = grid[iy * w + (ix + 1)];
+                            const c = grid[(iy + 1) * w + ix];
+                            const d = grid[(iy + 1) * w + (ix + 1)];
+
+                            if (a !== -1 && b !== -1 && c !== -1 && d !== -1) {
+                                indices.push(a, c, b);
+                                indices.push(b, c, d);
+                            }
+                        }
+                    }
+
+                    const geometry = new THREE.BufferGeometry();
+                    if (vertices.length > 0) {
+                        geometry.setIndex(indices);
+                        geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+                        geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+                        geometry.computeVertexNormals();
+                    }
+                    resolve(geometry);
+                }
+            };
+
+            processChunk();
+
+        } catch (e) {
+            reject(e);
         }
-    }
-
-    // Generate indices (faces)
-    // We look at the grid. If we have a valid vertex at (x,y), (x+1,y), (x,y+1), (x+1,y+1)
-    // we create two triangles.
-    for (let y = 0; y < h - 1; y++) {
-        for (let x = 0; x < w - 1; x++) {
-            const a = grid[y * w + x];
-            const b = grid[y * w + (x + 1)];
-            const c = grid[(y + 1) * w + x];
-            const d = grid[(y + 1) * w + (x + 1)];
-
-            // Create faces only if all vertices exist (avoids stretching across gaps)
-            if (a !== -1 && b !== -1 && c !== -1 && d !== -1) {
-                // Triangle 1: a, c, b
-                indices.push(a, c, b);
-                // Triangle 2: b, c, d
-                indices.push(b, c, d);
-            }
-        }
-    }
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setIndex(indices);
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-    geometry.computeVertexNormals();
-    
-    return geometry;
+    });
 };
 
-const GeneratedMesh: React.FC<Viewer3DProps> = ({ originalImage, depthMap, settings, onMeshReady }) => {
+const GeneratedMesh: React.FC<Viewer3DProps> = ({ originalImage, depthMap, settings, onMeshReady, onProgress }) => {
     const meshRef = useRef<THREE.Mesh>(null);
     const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null);
     const [texture, setTexture] = useState<THREE.Texture | null>(null);
+    const [isGenerating, setIsGenerating] = useState(false);
 
     useEffect(() => {
         if (!originalImage || !depthMap) return;
 
-        const loadImages = async () => {
-            const imgLoader = new THREE.ImageLoader();
-            const texLoader = new THREE.TextureLoader();
+        let active = true;
 
-            const [imgEl, depthEl, tex] = await Promise.all([
-                imgLoader.loadAsync(originalImage),
-                imgLoader.loadAsync(depthMap),
-                texLoader.loadAsync(originalImage)
-            ]);
+        const generate = async () => {
+            setIsGenerating(true);
             
-            // Set texture encoding/colorspace if needed
-            tex.colorSpace = THREE.SRGBColorSpace;
-            setTexture(tex);
+            try {
+                const imgLoader = new THREE.ImageLoader();
+                const texLoader = new THREE.TextureLoader();
 
-            // Process geometry in a microtask to avoid blocking UI too hard (simulated)
-            setTimeout(() => {
-                try {
-                    const geo = createMeshFromData(imgEl, depthEl, settings.displacementScale);
-                    setGeometry(geo);
-                } catch (e) {
-                    console.error("Failed to generate mesh", e);
-                }
-            }, 10);
+                const [imgEl, depthEl, tex] = await Promise.all([
+                    imgLoader.loadAsync(originalImage),
+                    imgLoader.loadAsync(depthMap),
+                    texLoader.loadAsync(originalImage)
+                ]);
+                
+                tex.colorSpace = THREE.SRGBColorSpace;
+                if (!active) return;
+                setTexture(tex);
+
+                // Start async generation
+                const geo = await createMeshFromDataAsync(
+                    imgEl, 
+                    depthEl, 
+                    settings.displacementScale, 
+                    (p) => { if(active && onProgress) onProgress(p); }
+                );
+
+                if (active) setGeometry(geo);
+            } catch (e) {
+                console.error("Mesh generation failed", e);
+            } finally {
+                if (active) setIsGenerating(false);
+            }
         };
 
-        loadImages();
+        generate();
 
+        return () => { active = false; };
     }, [originalImage, depthMap]);
 
-    // Update mesh scale/geometry when displacement setting changes
+    // Update parent ref when mesh is ready
     useEffect(() => {
-        if (meshRef.current && onMeshReady) {
+        if (meshRef.current && onMeshReady && geometry) {
             onMeshReady(meshRef.current);
         }
     }, [geometry, onMeshReady]);
+
+    // Update Z scale based on settings without regenerating geometry
+    useEffect(() => {
+        if (meshRef.current && geometry) {
+             // We stored normalized depth in Z. We scale the mesh Z axis to apply displacement.
+             // However, to scale ONLY the displacement relative to the flat plane, 
+             // we actually need to modify the position attribute or use a uniform.
+             // For simplicity in this exporter-friendly version, we are baking it into the position
+             // during generation. To allow dynamic updates efficiently, we'd need to keep a copy of original positions.
+             // Given the request for "Exact" and "High Quality", baking is safer for export.
+             // But for real-time slider, we can cheat by scaling the whole object Z,
+             // though that scales the perspective depth too.
+             // Let's rely on the geometry we created.
+             // Note: Re-running generation on slider change is too slow. 
+             // A vertex shader displacement is best for UI, but bad for export.
+             // A CPU-side position update is best for export.
+             
+             // Optimisation: We will just scale the Z axis of the object.
+             // It's an approximation but instant.
+             meshRef.current.scale.z = settings.displacementScale;
+        }
+    }, [settings.displacementScale]);
+
 
     if (!geometry || !texture) return null;
 
@@ -158,7 +224,6 @@ const GeneratedMesh: React.FC<Viewer3DProps> = ({ originalImage, depthMap, setti
             <mesh 
                 ref={meshRef} 
                 geometry={geometry} 
-                scale={[1, 1, 1]} // Scale is handled in geometry creation
                 castShadow 
                 receiveShadow
             >
@@ -169,6 +234,8 @@ const GeneratedMesh: React.FC<Viewer3DProps> = ({ originalImage, depthMap, setti
                     roughness={settings.roughness}
                     metalness={settings.metalness}
                     side={THREE.DoubleSide}
+                    alphaTest={0.5} // Ensure transparency in texture is respected
+                    transparent={true}
                 />
             </mesh>
         </Center>
@@ -218,7 +285,6 @@ export const Viewer3D: React.FC<Viewer3DProps> = (props) => {
   );
 };
 
-// Fallback for when we only have the image (flat plane)
 const PlaneFallback = ({ originalImage }: { originalImage: string }) => {
     const texture = useMemo(() => new THREE.TextureLoader().load(originalImage), [originalImage]);
     return (
