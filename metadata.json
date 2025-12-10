@@ -1,0 +1,5 @@
+{
+  "name": "Imagin3D",
+  "description": "Convert 2D images into 3D models using AI-powered depth estimation and texture displacement.",
+  "requestFramePermissions": []
+}
