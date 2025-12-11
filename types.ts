@@ -1,6 +1,7 @@
 export interface GenerationState {
-  status: 'idle' | 'uploading' | 'scanning_front' | 'dreaming_back' | 'calculating_volume' | 'success' | 'error';
+  status: 'idle' | 'uploading' | 'processing' | 'success' | 'error';
   message?: string;
+  progress?: number;
 }
 
 export type NeuralModel = 
@@ -15,9 +16,8 @@ export type NeuralModel =
 
 export interface ModelSettings {
   model: NeuralModel;
-  displacementScale: number;
+  apiKey: string;
   wireframe: boolean;
   meshColor: string;
-  metalness: number;
-  roughness: number;
+  autoRotate: boolean;
 }

@@ -1,33 +1,23 @@
-import React, { useState, useCallback, useRef } from 'react';
-import { Upload, Loader2, Sparkles, Box, Terminal, Cpu, Zap, Activity, ScanFace, Rotate3D, Network } from 'lucide-react';
+import React, { useState, useCallback } from 'react';
+import { Upload, Loader2, Sparkles, Box, Terminal, Activity, Zap, Network } from 'lucide-react';
 import { Viewer3D } from './components/Viewer3D';
 import { Controls } from './components/Controls';
-import { generateDepthMap, generateBackView } from './services/gemini';
+import { generate3DModel } from './services/gemini';
 import { GenerationState, ModelSettings } from './types';
-import * as THREE from 'three';
-import { GLTFExporter } from 'three-stdlib';
 
 const INITIAL_SETTINGS: ModelSettings = {
   model: 'TripoSR',
-  displacementScale: 1.0,
+  apiKey: '',
   wireframe: false,
   meshColor: '#6366f1', 
-  metalness: 0.5,
-  roughness: 0.5,
+  autoRotate: true,
 };
 
 function App() {
   const [originalImage, setOriginalImage] = useState<string | null>(null);
-  const [backImage, setBackImage] = useState<string | null>(null);
-  
-  const [frontDepthMap, setFrontDepthMap] = useState<string | null>(null);
-  const [backDepthMap, setBackDepthMap] = useState<string | null>(null);
-  
+  const [modelUrl, setModelUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<GenerationState>({ status: 'idle' });
   const [settings, setSettings] = useState<ModelSettings>(INITIAL_SETTINGS);
-  const [progress, setProgress] = useState(0);
-  
-  const meshRef = useRef<THREE.Object3D | null>(null);
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -36,11 +26,8 @@ function App() {
       reader.onload = (event) => {
         if (event.target?.result) {
           setOriginalImage(event.target.result as string);
-          setBackImage(null);
-          setFrontDepthMap(null);
-          setBackDepthMap(null);
+          setModelUrl(null);
           setStatus({ status: 'idle' });
-          setProgress(0);
         }
       };
       reader.readAsDataURL(file);
@@ -49,62 +36,29 @@ function App() {
 
   const processImage = async () => {
     if (!originalImage) return;
+    if (!settings.apiKey) {
+        setStatus({ status: 'error', message: 'API KEY MISSING' });
+        return;
+    }
 
-    setStatus({ status: 'scanning_front', message: `INITIATING ${settings.model} PIPELINE...` });
-    setProgress(5);
+    setStatus({ status: 'processing', message: `UPLOADING TO ${settings.model} CLUSTER...` });
     
     try {
-        const depthTask = generateDepthMap(originalImage, settings.model)
-            .then(res => {
-                setFrontDepthMap(res);
-                setProgress(prev => Math.min(prev + 40, 90));
-                return res;
-            });
-
-        const backViewTask = generateBackView(originalImage)
-            .then(async (res) => {
-                setBackImage(res);
-                setProgress(prev => Math.min(prev + 20, 90));
-                setStatus({ status: 'calculating_volume', message: `EXTRUDING ${settings.model} VOLUME...` });
-                const bDepth = await generateDepthMap(res, settings.model);
-                setBackDepthMap(bDepth);
-                setProgress(prev => Math.min(prev + 30, 95));
-                return bDepth;
-            });
-
-        await Promise.all([depthTask, backViewTask]);
-
-        setStatus({ status: 'success', message: 'ASSET GENERATED' });
-        setProgress(100);
-
-    } catch (error) {
+        const url = await generate3DModel(originalImage, settings.apiKey, settings.model);
+        setModelUrl(url);
+        setStatus({ status: 'success', message: 'INFERENCE COMPLETE' });
+    } catch (error: any) {
       console.error(error);
-      setStatus({ status: 'error', message: 'INFERENCE FAILED' });
+      setStatus({ status: 'error', message: error.message || 'INFERENCE FAILED' });
     }
   };
 
-  const handleDownload = async () => {
-    if (!meshRef.current) return;
-    try {
-        const exporter = new GLTFExporter();
-        const obj = meshRef.current;
-        obj.updateMatrixWorld();
-        
-        exporter.parse(
-            obj,
-            (gltf) => {
-                const blob = new Blob([gltf as ArrayBuffer], { type: 'application/octet-stream' });
-                const url = URL.createObjectURL(blob);
-                const link = document.createElement('a');
-                link.href = url;
-                link.download = `aetherforge_${settings.model}_v2.glb`;
-                link.click();
-            },
-            (err) => console.error("Export Error:", err),
-            { binary: true }
-        );
-    } catch (e) {
-        console.error("Export Failed", e);
+  const handleDownload = () => {
+    if (modelUrl) {
+        const link = document.createElement('a');
+        link.href = modelUrl;
+        link.download = `aetherforge_${settings.model}_${Date.now()}.glb`;
+        link.click();
     }
   };
 
@@ -128,18 +82,18 @@ function App() {
                 </h1>
                 <span className="text-[0.6rem] tracking-[0.4em] text-indigo-500 uppercase flex items-center gap-2">
                    <span className={`w-1 h-1 rounded-full ${settings.model === 'TripoSR' ? 'bg-green-400 animate-pulse' : 'bg-indigo-400'}`}></span>
-                   {settings.model} Active
+                   REAL-TIME INFERENCE LINK
                 </span>
             </div>
           </div>
           <div className="flex items-center gap-6 text-sm font-mono text-indigo-400">
             <div className="hidden md:flex items-center gap-2 px-3 py-1 border-r border-indigo-900/50">
                 <Activity className="w-4 h-4 text-green-400" />
-                <span>GPU: ONLINE</span>
+                <span>GPU: REMOTE</span>
             </div>
             <div className="flex items-center gap-2 border border-indigo-500/30 px-3 py-1 bg-indigo-950/20 clip-corner-br">
                  <Zap className="w-3 h-3 text-yellow-400" />
-                 <span>CORE_ACTIVE</span>
+                 <span>API_READY</span>
             </div>
           </div>
         </div>
@@ -148,7 +102,7 @@ function App() {
       <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 h-full lg:h-[calc(100vh-8rem)]">
           
-          {/* Left Column: Data Input */}
+          {/* Left Column: Input & Controls */}
           <div className="lg:col-span-3 flex flex-col gap-6 overflow-y-auto pr-2 custom-scrollbar">
             
             {/* Upload Area */}
@@ -174,53 +128,46 @@ function App() {
                     </label>
                 ) : (
                     <div className="space-y-4">
-                    <div className="relative border border-indigo-700/50 group bg-black">
-                        <div className="absolute inset-0 bg-gradient-to-b from-transparent to-black/80 z-10"></div>
-                        <img src={originalImage} alt="Source" className="w-full h-48 object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
-                        
-                        <button 
-                            onClick={() => { setOriginalImage(null); setBackImage(null); setFrontDepthMap(null); setBackDepthMap(null); setStatus({status:'idle'}); }}
-                            className="absolute top-2 right-2 p-1 bg-red-900/80 hover:bg-red-600 border border-red-500 text-white z-30 clip-corner-br transition-all"
-                        >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-                        </button>
-                    </div>
-
-                    {/* Back View Preview */}
-                    {backImage && (
-                        <div className="relative border border-indigo-700/50 bg-black mt-2 animate-fadeIn">
-                             <div className="absolute top-0 left-0 bg-indigo-600/80 text-[10px] px-2 py-0.5 font-mono text-white backdrop-blur-sm">BACK_BUFFER</div>
-                             <img src={backImage} className="w-full h-24 object-cover opacity-80" />
+                        <div className="relative border border-indigo-700/50 group bg-black">
+                            <div className="absolute inset-0 bg-gradient-to-b from-transparent to-black/80 z-10"></div>
+                            <img src={originalImage} alt="Source" className="w-full h-48 object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
+                            
+                            <button 
+                                onClick={() => { setOriginalImage(null); setModelUrl(null); setStatus({status:'idle'}); }}
+                                className="absolute top-2 right-2 p-1 bg-red-900/80 hover:bg-red-600 border border-red-500 text-white z-30 clip-corner-br transition-all"
+                            >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                            </button>
                         </div>
-                    )}
-                    
-                    <button
-                        onClick={processImage}
-                        disabled={status.status !== 'idle' && status.status !== 'success' && status.status !== 'error'}
-                        className={`w-full py-3 px-4 font-bold font-cyber uppercase tracking-wider flex items-center justify-center gap-2 transition-all border clip-corners relative overflow-hidden group ${
-                            status.status !== 'idle' && status.status !== 'success' && status.status !== 'error'
-                            ? 'bg-indigo-950 border-indigo-800 text-indigo-700 cursor-wait'
-                            : backDepthMap
-                            ? 'bg-green-900/20 border-green-500 text-green-400 hover:bg-green-900/40'
-                            : 'bg-indigo-600/20 border-indigo-500 text-indigo-300 hover:bg-indigo-500 hover:text-white shadow-[0_0_15px_rgba(99,102,241,0.3)]'
-                        }`}
-                    >
-                        {status.status === 'scanning_front' || status.status === 'calculating_volume' ? (
-                            <><Loader2 className="w-5 h-5 animate-spin" /> {progress}%</>
-                        ) : backDepthMap ? (
-                        <><Sparkles className="w-5 h-5" /> REGENERATE</>
-                        ) : (
-                        <><Sparkles className="w-5 h-5" /> FORGE ASSET</>
-                        )}
                         
-                        <div className="absolute top-0 -inset-full h-full w-1/2 z-5 block transform -skew-x-12 bg-gradient-to-r from-transparent to-white opacity-10 group-hover:animate-shine" />
-                    </button>
-                    
-                    {status.status === 'error' && (
-                        <p className="text-xs text-red-400 font-mono border-l-2 border-red-500 pl-2 bg-red-950/30 p-1">
-                            SYS_ERR: {status.message}
-                        </p>
-                    )}
+                        <button
+                            onClick={processImage}
+                            disabled={status.status === 'processing'}
+                            className={`w-full py-3 px-4 font-bold font-cyber uppercase tracking-wider flex items-center justify-center gap-2 transition-all border clip-corners relative overflow-hidden group ${
+                                status.status === 'processing'
+                                ? 'bg-indigo-950 border-indigo-800 text-indigo-700 cursor-wait'
+                                : 'bg-indigo-600/20 border-indigo-500 text-indigo-300 hover:bg-indigo-500 hover:text-white shadow-[0_0_15px_rgba(99,102,241,0.3)]'
+                            }`}
+                        >
+                            {status.status === 'processing' ? (
+                                <><Loader2 className="w-5 h-5 animate-spin" /> EXTRUDING...</>
+                            ) : (
+                                <><Sparkles className="w-5 h-5" /> GENERATE 3D</>
+                            )}
+                            
+                            <div className="absolute top-0 -inset-full h-full w-1/2 z-5 block transform -skew-x-12 bg-gradient-to-r from-transparent to-white opacity-10 group-hover:animate-shine" />
+                        </button>
+                        
+                        {status.status === 'error' && (
+                            <p className="text-[10px] text-red-400 font-mono border-l-2 border-red-500 pl-2 bg-red-950/30 p-2 break-all">
+                                ERR: {status.message}
+                            </p>
+                        )}
+                        {status.status === 'processing' && (
+                            <p className="text-[10px] text-indigo-400 font-mono animate-pulse">
+                                > EST. TIME: 10-30 SECONDS...
+                            </p>
+                        )}
                     </div>
                 )}
                 </div>
@@ -231,30 +178,25 @@ function App() {
                 settings={settings} 
                 updateSetting={updateSetting} 
                 onDownload={handleDownload}
-                hasDepth={!!frontDepthMap}
+                hasModel={!!modelUrl}
             />
           </div>
 
           {/* Right Column: 3D Viewer */}
           <div className="lg:col-span-9 h-[500px] lg:h-full relative group">
-             {/* Holographic Frame */}
              <div className="absolute inset-0 border border-indigo-900/20 pointer-events-none z-10"></div>
+             {/* Corners */}
              <div className="absolute top-0 left-0 w-8 h-8 border-t-2 border-l-2 border-indigo-500 z-10"></div>
              <div className="absolute top-0 right-0 w-8 h-8 border-t-2 border-r-2 border-indigo-500 z-10"></div>
              <div className="absolute bottom-0 left-0 w-8 h-8 border-b-2 border-l-2 border-indigo-500 z-10"></div>
              <div className="absolute bottom-0 right-0 w-8 h-8 border-b-2 border-r-2 border-indigo-500 z-10"></div>
              
-             {/* Background Grid */}
              <div className="absolute inset-0 bg-[linear-gradient(rgba(99,102,241,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(99,102,241,0.05)_1px,transparent_1px)] bg-[size:30px_30px] pointer-events-none"></div>
 
-            {originalImage ? (
+            {modelUrl ? (
                 <Viewer3D 
-                    originalImage={originalImage} 
-                    depthMap={frontDepthMap} 
-                    backImage={backImage}
-                    backDepthMap={backDepthMap}
+                    modelUrl={modelUrl} 
                     settings={settings} 
-                    onMeshReady={(mesh) => { meshRef.current = mesh; }}
                 />
             ) : (
                 <div className="w-full h-full bg-black/40 backdrop-blur-sm border border-indigo-900/30 flex flex-col items-center justify-center text-indigo-800 space-y-6">
@@ -268,7 +210,7 @@ function App() {
                     <div className="text-center">
                         <p className="text-3xl font-cyber text-indigo-500/50 tracking-[0.2em] mb-2">AETHERFORGE</p>
                         <p className="text-sm font-mono text-indigo-700 max-w-md mx-auto uppercase">
-                            Select architecture to begin inference.
+                            Awaiting Inference Command
                         </p>
                     </div>
                 </div>
@@ -278,12 +220,11 @@ function App() {
         </div>
       </main>
       
-      {/* Footer */}
       <footer className="border-t border-indigo-900/30 bg-black/90 py-1 px-4 text-[10px] font-mono text-indigo-700 flex justify-between uppercase z-50">
-        <div>STATUS: AETHER_LINK_STABLE</div>
+        <div>STATUS: IDLE</div>
         <div className="flex gap-4">
             <span>ARCH: {settings.model}</span>
-            <span>BUILD: 4.1.0</span>
+            <span>BUILD: 5.0.0-NATIVE</span>
         </div>
       </footer>
     </div>

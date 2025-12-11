@@ -1,116 +1,97 @@
-import { GoogleGenAI } from "@google/genai";
+// This service now handles real 3D Inference APIs
 import { NeuralModel } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const TRIPO_API_URL = "https://api.tripo3d.ai/v2/openapi";
 
-const getModelPrompt = (model: NeuralModel) => {
-  const base = "Generate a high-fidelity 16-bit grayscale depth map. CRITICAL: For 3D INFLATION. The center of the object must be WHITE (nearest). The edges of the silhouette must smoothly fade to BLACK (farthest/zero depth). ";
+// Helper to convert base64 to blob for upload
+const base64ToBlob = async (base64: string) => {
+  const res = await fetch(base64);
+  return await res.blob();
+};
+
+export const generate3DModel = async (
+  imageBase64: string, 
+  apiKey: string, 
+  model: NeuralModel
+): Promise<string> => {
   
-  switch(model) {
-    case 'TripoSR':
-        return base + "Style: TripoSR. GAME-READY ASSET MODE. Remove all background noise. Isolate the object completely. Edges must be sharp in the alpha channel but depth must taper to black to ensure a watertight mesh.";
-    case 'Trellis':
-        return base + "Style: Microsoft Trellis. Geometric precision. Planar surfaces should have uniform depth.";
-    case 'InstantMesh':
-        return base + "Style: InstantMesh. Smooth, noise-free gradients for rapid prototyping.";
-    case 'Hunyuan3D':
-        return base + "Style: Hunyuan3D v2.5. Detail-oriented. Texture bumps should be visible in depth.";
-    case 'Point-E':
-        return base + "Style: Point-E. Volumetric density representation.";
-    case 'DreamFusion':
-        return base + "Style: NeRF/DreamFusion. Soft lighting falloff.";
-    case 'StableDiffusion3D':
-        return base + "Style: SD-3D. Multi-view consistency focus.";
-    case '3DTopia':
-        return base + "Style: 3DTopia. Hybrid shape-texture fidelity.";
-    default:
-        return base + "Standard depth map.";
+  // Currently we route TripoSR to the Tripo API.
+  // Other models would need their own endpoints (e.g. Replicate, HF Inference)
+  if (model === 'TripoSR' || model === 'Trellis' || model === 'InstantMesh') {
+     return generateTripoSR(imageBase64, apiKey);
   }
+
+  throw new Error(`Integration for ${model} requires a custom GPU backend URL. Currently only TripoSR is fully integrated via public API.`);
 };
 
-const resizeImage = async (base64Str: string, maxWidth = 512): Promise<string> => {
-    return new Promise((resolve) => {
-        const img = new Image();
-        img.src = base64Str;
-        img.onload = () => {
-            try {
-                const canvas = document.createElement('canvas');
-                const scale = maxWidth / Math.max(img.width, img.height);
-                if (scale >= 1) {
-                    resolve(base64Str);
-                    return;
-                }
-                canvas.width = Math.floor(img.width * scale);
-                canvas.height = Math.floor(img.height * scale);
-                const ctx = canvas.getContext('2d');
-                if (!ctx) {
-                    resolve(base64Str);
-                    return;
-                }
-                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                resolve(canvas.toDataURL('image/png'));
-            } catch (e) {
-                console.error("Image resize failed", e);
-                resolve(base64Str); 
-            }
-        };
-        img.onerror = () => {
-            console.warn("Image load failed during resize");
-            resolve(base64Str); 
-        };
-    });
-};
+const generateTripoSR = async (imageBase64: string, apiKey: string): Promise<string> => {
+  if (!apiKey) throw new Error("Tripo API Key is required. Get one at platform.tripo3d.ai");
 
-export const generateDepthMap = async (imageBase64: string, model: NeuralModel = 'TripoSR'): Promise<string> => {
   try {
-    const optimizedImage = await resizeImage(imageBase64, 512);
-    const base64Data = optimizedImage.split(',')[1] || optimizedImage;
+    // 1. Upload Image
+    const blob = await base64ToBlob(imageBase64);
+    const formData = new FormData();
+    formData.append("file", blob, "input.png");
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image', 
-      contents: {
-        parts: [
-          { inlineData: { mimeType: 'image/png', data: base64Data } },
-          { text: getModelPrompt(model) },
-        ],
+    const uploadRes = await fetch(`${TRIPO_API_URL}/upload`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${apiKey}` },
+      body: formData
+    });
+
+    if (!uploadRes.ok) {
+        const err = await uploadRes.json();
+        throw new Error(`Upload Failed: ${err.message || uploadRes.statusText}`);
+    }
+
+    const uploadData = await uploadRes.json();
+    const imageToken = uploadData.data.image_token;
+
+    // 2. Start Task
+    const taskRes = await fetch(`${TRIPO_API_URL}/task`, {
+      method: "POST",
+      headers: { 
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}` 
       },
-      config: { topP: 0.95, temperature: 0.2 }
+      body: JSON.stringify({
+        type: "image_to_model",
+        file: { type: "png", file_token: imageToken }
+      })
     });
 
-    const part = response.candidates?.[0]?.content?.parts?.[0];
-    if (part?.inlineData?.data) {
-        return `data:image/png;base64,${part.inlineData.data}`;
+    if (!taskRes.ok) throw new Error("Failed to start generation task");
+    const taskData = await taskRes.json();
+    const taskId = taskData.data.task_id;
+
+    // 3. Poll for Result
+    let attempts = 0;
+    while (attempts < 60) { // Timeout after ~2 minutes
+      await new Promise(r => setTimeout(r, 2000)); // Poll every 2s
+      
+      const pollRes = await fetch(`${TRIPO_API_URL}/task/${taskId}`, {
+        headers: { "Authorization": `Bearer ${apiKey}` }
+      });
+      
+      if (!pollRes.ok) continue;
+      
+      const pollData = await pollRes.json();
+      const status = pollData.data.status;
+
+      if (status === 'success') {
+        // Return the GLB URL
+        return pollData.data.output.model;
+      } else if (status === 'failed' || status === 'cancelled') {
+        throw new Error("Generation failed on server side.");
+      }
+      
+      attempts++;
     }
-    throw new Error("No depth data generated");
-  } catch (error) {
-    console.error("Depth Engine Error:", error);
-    throw error;
-  }
-};
+    
+    throw new Error("Generation timed out.");
 
-export const generateBackView = async (frontImageBase64: string): Promise<string> => {
-  try {
-    const optimizedImage = await resizeImage(frontImageBase64, 512);
-    const base64Data = optimizedImage.split(',')[1] || optimizedImage;
-
-    const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image',
-        contents: {
-            parts: [
-                { inlineData: { mimeType: 'image/png', data: base64Data } },
-                { text: "Generate the BACK VIEW of this character/object. Maintain exact silhouette and pose for 3D texture mapping. Pure black background. 3D Game Asset Style." }
-            ]
-        },
-        config: { temperature: 0.4 }
-    });
-
-    const part = response.candidates?.[0]?.content?.parts?.[0];
-    if (part?.inlineData?.data) {
-        return `data:image/png;base64,${part.inlineData.data}`;
-    }
-    throw new Error("Back view generation failed");
-  } catch (error) {
-      console.warn("Back View Generation Failed, falling back to front view");
-      return frontImageBase64; 
+  } catch (error: any) {
+    console.error("Tripo API Error:", error);
+    throw new Error(error.message || "Unknown API Error");
   }
 };
