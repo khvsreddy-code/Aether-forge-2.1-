@@ -1,286 +1,321 @@
 import React, { useRef, useMemo, useEffect, useState } from 'react';
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { OrbitControls, PerspectiveCamera, Environment, Center } from '@react-three/drei';
+import { Canvas } from '@react-three/fiber';
+import { OrbitControls, PerspectiveCamera, Environment, ContactShadows, Stars, Center } from '@react-three/drei';
 import * as THREE from 'three';
 import { ModelSettings } from '../types';
 
 interface Viewer3DProps {
   originalImage: string;
   depthMap: string | null;
+  backImage: string | null;
+  backDepthMap: string | null;
   settings: ModelSettings;
-  onMeshReady?: (mesh: THREE.Mesh) => void;
+  onMeshReady?: (object: THREE.Object3D) => void;
   onProgress?: (progress: number) => void;
 }
 
-// Async generator to create geometry without freezing the UI
-const createMeshFromDataAsync = async (
-    img: HTMLImageElement, 
-    depthImg: HTMLImageElement, 
+// Higher resolution for smoother curved surfaces
+const GEOMETRY_RESOLUTION = 300; 
+
+const createVolumetricGeometry = async (
+    image: string,
+    depth: string,
     displacementScale: number,
-    onProgress?: (p: number) => void
+    isBack: boolean
 ): Promise<THREE.BufferGeometry> => {
     return new Promise((resolve, reject) => {
-        try {
-            const width = img.width;
-            const height = img.height;
-            
-            const canvas = document.createElement('canvas');
-            canvas.width = width;
-            canvas.height = height;
-            const ctx = canvas.getContext('2d', { willReadFrequently: true });
-            if (!ctx) throw new Error('Could not create canvas context');
+        const img = new Image();
+        const dImg = new Image();
+        
+        let loaded = 0;
+        let hasError = false;
 
-            // Draw original image to get Alpha channel for precise cutting
-            ctx.drawImage(img, 0, 0);
-            const colorData = ctx.getImageData(0, 0, width, height).data;
+        const checkLoad = () => {
+            if (hasError) return;
+            loaded++;
+            if (loaded === 2) process();
+        };
 
-            // Draw depth map to get Z values
-            ctx.clearRect(0,0, width, height);
-            ctx.drawImage(depthImg, 0, 0);
-            const depthData = ctx.getImageData(0, 0, width, height).data;
+        const handleError = (e: string | Event) => {
+            if (hasError) return;
+            hasError = true;
+            reject(new Error(`Failed to load images: ${e}`));
+        };
 
-            // HIGH QUALITY SETTING: Step 2 provides 4x more detail than Step 4
-            // For 1024px image: Step 2 = 260k vertices (High Quality)
-            // Step 1 would be 1M vertices (Ultra High) - might be too heavy for some mobiles
-            const step = 2; 
-            const w = Math.floor(width / step);
-            const h = Math.floor(height / step);
+        // Cross-origin might be needed depending on source, usually base64 is fine
+        img.onload = checkLoad;
+        img.onerror = handleError;
+        img.src = image;
 
-            const vertices: number[] = [];
-            const indices: number[] = [];
-            const uvs: number[] = [];
-            const grid = new Int32Array(w * h).fill(-1);
+        dImg.onload = checkLoad;
+        dImg.onerror = handleError;
+        dImg.src = depth;
 
-            let vertexCount = 0;
-            const depthThreshold = 20; // Background cutoff if alpha is opaque
-            const alphaThreshold = 50; // Cutoff for transparent PNGs
+        const process = () => {
+            try {
+                const w = GEOMETRY_RESOLUTION;
+                const aspect = img.width / img.height;
+                const h = Math.round(w / aspect);
 
-            // Processing in chunks to avoid blocking main thread
-            const CHUNK_SIZE = 50; // Process 50 rows per frame
-            let y = 0;
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                if (!ctx) throw new Error('Context error');
 
-            const processChunk = () => {
-                const endY = Math.min(y + CHUNK_SIZE, h);
+                // Read Color
+                ctx.drawImage(img, 0, 0, w, h);
+                const colorData = ctx.getImageData(0, 0, w, h).data;
+
+                // Read Depth
+                ctx.clearRect(0, 0, w, h);
+                ctx.drawImage(dImg, 0, 0, w, h);
+                const depthData = ctx.getImageData(0, 0, w, h).data;
+
+                const vertices: number[] = [];
+                const indices: number[] = [];
+                const uvs: number[] = [];
+                const colors: number[] = []; 
+
+                let vertexCount = 0;
+                const grid = new Int32Array(w * h).fill(-1);
+
+                // Volumetric Configuration
+                const radiusBase = 0.5; // The "core" thickness of the model
+                const heightScale = 4.0; 
                 
-                for (; y < endY; y++) {
+                // We wrap the image around a cylinder.
+                // Front image covers -90 to +90 degrees.
+                // Back image covers 90 to 270 degrees.
+
+                for (let y = 0; y < h; y++) {
                     for (let x = 0; x < w; x++) {
-                        const px = x * step;
-                        const py = y * step;
-                        const pixelIndex = (py * width + px) * 4;
+                        const i = (y * w + x) * 4;
+                        const alpha = colorData[i + 3];
 
-                        // Check Original Image Alpha (Exact Cutting)
-                        const alpha = colorData[pixelIndex + 3];
-                        
-                        // Check Depth Value
-                        const depthVal = depthData[pixelIndex];
-                        
-                        // Skip if transparent in original OR too dark in depth map (background)
-                        // If the original image has transparency, we strictly use that.
-                        // If it's a JPG (full opacity), we use the depth threshold.
-                        const isBackground = alpha < alphaThreshold || (alpha > 250 && depthVal < depthThreshold);
-                        
-                        if (isBackground) continue;
+                        // Skip fully transparent pixels to carve the silhouette
+                        if (alpha < 50) continue;
 
-                        // Normalize
+                        // Normalized UV
                         const u = x / (w - 1);
                         const v = 1 - (y / (h - 1));
 
-                        const vx = (u - 0.5) * 4;
-                        const vy = (v - 0.5) * 4 * (height / width);
-                        // Store raw normalized depth (0-1), scale applied in shader or mesh scale
-                        const vz = (depthVal / 255); 
+                        // Depth Value (0 = Far/Core, 1 = Near/Surface)
+                        const dVal = depthData[i] / 255;
+                        
+                        // --- CYLINDRICAL MAPPING MATH ---
+                        
+                        // Angle: 
+                        // If Front: Map u(0..1) to angle (-PI/3 to +PI/3) approx, to avoid extreme stretching at edges?
+                        // Or map to full (-PI/2 to PI/2).
+                        // Let's use a slightly narrower FOV for the texture to preserve details on the "face" 
+                        // and let the curvature handle the sides.
+                        const arcAngle = Math.PI * 0.9; // 162 degrees coverage per side
+                        const angleOffset = isBack ? Math.PI : 0;
+                        const theta = ((u - 0.5) * arcAngle) + angleOffset;
+
+                        // Radius displacement
+                        // The brighter the depth pixel, the further out from the center axis it pushes.
+                        // We add a base radius so the character has volume even at "black" depth.
+                        const r = (radiusBase * 0.5) + (dVal * displacementScale * 0.6);
+
+                        // Convert Polar to Cartesian (X, Z)
+                        // Note: In Three.js, Y is up. X is Right. Z is Forward.
+                        const vx = r * Math.sin(theta);
+                        const vz = r * Math.cos(theta);
+                        const vy = (v - 0.5) * heightScale;
 
                         vertices.push(vx, vy, vz);
                         uvs.push(u, v);
+                        colors.push(colorData[i]/255, colorData[i+1]/255, colorData[i+2]/255);
+
                         grid[y * w + x] = vertexCount;
                         vertexCount++;
                     }
                 }
 
-                if (onProgress) onProgress(Math.round((y / h) * 100));
+                // Generate Faces with cleanup for edge tearing
+                for (let y = 0; y < h - 1; y++) {
+                    for (let x = 0; x < w - 1; x++) {
+                        const a = grid[y * w + x];
+                        const b = grid[y * w + (x + 1)];
+                        const c = grid[(y + 1) * w + x];
+                        const d = grid[(y + 1) * w + (x + 1)];
 
-                if (y < h) {
-                    // Schedule next chunk
-                    requestAnimationFrame(processChunk);
-                } else {
-                    // Finished vertices, generate indices
-                    // Index generation is fast enough to do in one go usually, but let's be safe
-                    for (let iy = 0; iy < h - 1; iy++) {
-                        for (let ix = 0; ix < w - 1; ix++) {
-                            const a = grid[iy * w + ix];
-                            const b = grid[iy * w + (ix + 1)];
-                            const c = grid[(iy + 1) * w + ix];
-                            const d = grid[(iy + 1) * w + (ix + 1)];
-
-                            if (a !== -1 && b !== -1 && c !== -1 && d !== -1) {
-                                indices.push(a, c, b);
-                                indices.push(b, c, d);
+                        if (a !== -1 && b !== -1 && c !== -1 && d !== -1) {
+                            // Filter long triangles that span across gaps (silhouette tearing)
+                            const vA = new THREE.Vector3(vertices[a*3], vertices[a*3+1], vertices[a*3+2]);
+                            const vB = new THREE.Vector3(vertices[b*3], vertices[b*3+1], vertices[b*3+2]);
+                            const vC = new THREE.Vector3(vertices[c*3], vertices[c*3+1], vertices[c*3+2]);
+                            
+                            const distAB = vA.distanceTo(vB);
+                            const distAC = vA.distanceTo(vC);
+                            
+                            // If vertices are too far apart physically but adjacent in grid, it's a depth jump (gap)
+                            if (distAB < 0.2 && distAC < 0.2) {
+                                // Correct winding order for visibility
+                                // Front: Counter-Clockwise?
+                                // Since we are inside the cylinder looking out or outside looking in?
+                                // Standard CCW.
+                                indices.push(a, d, b);
+                                indices.push(a, c, d);
                             }
                         }
                     }
-
-                    const geometry = new THREE.BufferGeometry();
-                    if (vertices.length > 0) {
-                        geometry.setIndex(indices);
-                        geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-                        geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-                        geometry.computeVertexNormals();
-                    }
-                    resolve(geometry);
                 }
-            };
 
-            processChunk();
+                const geometry = new THREE.BufferGeometry();
+                geometry.setIndex(indices);
+                geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+                geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+                geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+                geometry.computeVertexNormals();
 
-        } catch (e) {
-            reject(e);
-        }
+                resolve(geometry);
+            } catch (e) {
+                reject(e);
+            }
+        };
     });
 };
 
-const GeneratedMesh: React.FC<Viewer3DProps> = ({ originalImage, depthMap, settings, onMeshReady, onProgress }) => {
-    const meshRef = useRef<THREE.Mesh>(null);
-    const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null);
-    const [texture, setTexture] = useState<THREE.Texture | null>(null);
-    const [isGenerating, setIsGenerating] = useState(false);
+const ModelRenderer = ({ originalImage, depthMap, backImage, backDepthMap, settings, onMeshReady }: Viewer3DProps) => {
+    const groupRef = useRef<THREE.Group>(null);
+    const [frontGeo, setFrontGeo] = useState<THREE.BufferGeometry | null>(null);
+    const [backGeo, setBackGeo] = useState<THREE.BufferGeometry | null>(null);
+
+    const frontTex = useMemo(() => new THREE.TextureLoader().load(originalImage), [originalImage]);
+    const backTex = useMemo(() => backImage ? new THREE.TextureLoader().load(backImage) : null, [backImage]);
 
     useEffect(() => {
         if (!originalImage || !depthMap) return;
+        createVolumetricGeometry(originalImage, depthMap, settings.displacementScale, false)
+            .then(setFrontGeo)
+            .catch(e => console.error("Front geometry failed", e));
+    }, [originalImage, depthMap, settings.displacementScale]);
 
-        let active = true;
-
-        const generate = async () => {
-            setIsGenerating(true);
-            
-            try {
-                const imgLoader = new THREE.ImageLoader();
-                const texLoader = new THREE.TextureLoader();
-
-                const [imgEl, depthEl, tex] = await Promise.all([
-                    imgLoader.loadAsync(originalImage),
-                    imgLoader.loadAsync(depthMap),
-                    texLoader.loadAsync(originalImage)
-                ]);
-                
-                tex.colorSpace = THREE.SRGBColorSpace;
-                if (!active) return;
-                setTexture(tex);
-
-                // Start async generation
-                const geo = await createMeshFromDataAsync(
-                    imgEl, 
-                    depthEl, 
-                    settings.displacementScale, 
-                    (p) => { if(active && onProgress) onProgress(p); }
-                );
-
-                if (active) setGeometry(geo);
-            } catch (e) {
-                console.error("Mesh generation failed", e);
-            } finally {
-                if (active) setIsGenerating(false);
-            }
-        };
-
-        generate();
-
-        return () => { active = false; };
-    }, [originalImage, depthMap]);
-
-    // Update parent ref when mesh is ready
     useEffect(() => {
-        if (meshRef.current && onMeshReady && geometry) {
-            onMeshReady(meshRef.current);
+        if (!backImage || !backDepthMap) {
+            setBackGeo(null);
+            return;
         }
-    }, [geometry, onMeshReady]);
+        createVolumetricGeometry(backImage, backDepthMap, settings.displacementScale, true)
+            .then(setBackGeo)
+            .catch(e => console.error("Back geometry failed", e));
+    }, [backImage, backDepthMap, settings.displacementScale]);
 
-    // Update Z scale based on settings without regenerating geometry
     useEffect(() => {
-        if (meshRef.current && geometry) {
-             // We stored normalized depth in Z. We scale the mesh Z axis to apply displacement.
-             // However, to scale ONLY the displacement relative to the flat plane, 
-             // we actually need to modify the position attribute or use a uniform.
-             // For simplicity in this exporter-friendly version, we are baking it into the position
-             // during generation. To allow dynamic updates efficiently, we'd need to keep a copy of original positions.
-             // Given the request for "Exact" and "High Quality", baking is safer for export.
-             // But for real-time slider, we can cheat by scaling the whole object Z,
-             // though that scales the perspective depth too.
-             // Let's rely on the geometry we created.
-             // Note: Re-running generation on slider change is too slow. 
-             // A vertex shader displacement is best for UI, but bad for export.
-             // A CPU-side position update is best for export.
-             
-             // Optimisation: We will just scale the Z axis of the object.
-             // It's an approximation but instant.
-             meshRef.current.scale.z = settings.displacementScale;
+        if (groupRef.current && onMeshReady && (frontGeo || backGeo)) {
+            onMeshReady(groupRef.current);
         }
-    }, [settings.displacementScale]);
+    }, [frontGeo, backGeo, onMeshReady]);
 
+    // Material logic
+    const MaterialComponent = settings.wireframe ? 'meshBasicMaterial' : 'meshStandardMaterial';
+    const matProps = {
+        map: frontTex,
+        side: THREE.DoubleSide,
+        roughness: settings.roughness,
+        metalness: settings.metalness,
+        wireframe: settings.wireframe,
+        color: settings.wireframe ? settings.meshColor : 'white',
+        transparent: true, // Helps with alpha edges
+        alphaTest: 0.5,
+    };
 
-    if (!geometry || !texture) return null;
+    // --- POINT-E MODE (Point Cloud) ---
+    if (settings.model === 'Point-E') {
+        return (
+            <group ref={groupRef} rotation={[0, Math.PI, 0]}>
+                 <Center>
+                {frontGeo && (
+                    <points geometry={frontGeo}>
+                        <pointsMaterial size={0.015} vertexColors sizeAttenuation transparent opacity={0.8} />
+                    </points>
+                )}
+                {backGeo && (
+                     <points geometry={backGeo}>
+                        <pointsMaterial size={0.015} vertexColors sizeAttenuation transparent opacity={0.8} />
+                    </points>
+                )}
+                </Center>
+            </group>
+        );
+    }
 
+    // --- SOLID MESH MODE ---
     return (
-        <Center>
-            <mesh 
-                ref={meshRef} 
-                geometry={geometry} 
-                castShadow 
-                receiveShadow
-            >
-                <meshStandardMaterial
-                    map={texture}
-                    wireframe={settings.wireframe}
-                    color={settings.wireframe ? settings.meshColor : 'white'}
-                    roughness={settings.roughness}
-                    metalness={settings.metalness}
-                    side={THREE.DoubleSide}
-                    alphaTest={0.5} // Ensure transparency in texture is respected
-                    transparent={true}
-                />
-            </mesh>
-        </Center>
+        <group ref={groupRef} rotation={[0, Math.PI, 0]}> 
+        {/* Rotate PI because our calculation puts front at -Z usually, we want it facing camera at +Z */}
+            <Center>
+            {frontGeo && (
+                <mesh geometry={frontGeo} castShadow receiveShadow>
+                    {/* @ts-ignore */}
+                    <meshStandardMaterial {...matProps} map={frontTex} />
+                </mesh>
+            )}
+            {backGeo && (
+                <mesh geometry={backGeo} castShadow receiveShadow>
+                    {/* @ts-ignore */}
+                    <meshStandardMaterial {...matProps} map={backTex || frontTex} />
+                </mesh>
+            )}
+            {/* Core Filler Mesh (Hides internal gaps if viewing from steep angles) */}
+            {frontGeo && (
+                 <mesh scale={[0.4, 3.5, 0.4]} position={[0, 0, 0]}>
+                    <cylinderGeometry args={[1, 1, 1, 16]} />
+                    <meshBasicMaterial color="#1a1a1a" />
+                 </mesh>
+            )}
+            </Center>
+        </group>
     );
 };
 
 export const Viewer3D: React.FC<Viewer3DProps> = (props) => {
   return (
-    <div className="w-full h-full bg-slate-900 relative rounded-lg overflow-hidden shadow-2xl border border-slate-700">
-      <Canvas shadows dpr={[1, 2]} camera={{ position: [0, 0, 5], fov: 45 }}>
-        <PerspectiveCamera makeDefault position={[0, 0, 6]} />
+    <div className="w-full h-full relative overflow-hidden bg-void">
+      {/* Background Gradient */}
+      <div className="absolute inset-0 bg-gradient-to-b from-[#050510] to-[#000000] z-0 pointer-events-none"></div>
+      
+      <Canvas shadows dpr={[1, 1.5]} camera={{ position: [0, 1, 5], fov: 35 }}>
+        <PerspectiveCamera makeDefault position={[0, 0.5, 6]} />
         <OrbitControls 
           enableDamping 
           dampingFactor={0.05} 
-          minDistance={1} 
-          maxDistance={20}
+          minDistance={2} 
+          maxDistance={12}
+          autoRotate={!!props.backImage}
+          autoRotateSpeed={2}
+          maxPolarAngle={Math.PI / 1.5} // Don't allow going too far below
+          minPolarAngle={Math.PI / 4}
         />
         
-        <ambientLight intensity={0.4} />
-        <directionalLight 
-          position={[5, 10, 5]} 
-          intensity={1} 
-          castShadow 
-          shadow-mapSize-width={2048} 
-          shadow-mapSize-height={2048}
-        />
-        <pointLight position={[-10, 0, -10]} intensity={0.5} color="#4f46e5" />
-        <pointLight position={[10, 5, 10]} intensity={0.5} color="#ec4899" />
+        {/* Cinematic Studio Lighting */}
+        <ambientLight intensity={0.5} />
+        <spotLight position={[5, 5, 5]} intensity={1.5} angle={0.5} penumbra={1} castShadow color="#ffffff" />
+        <spotLight position={[-5, 5, -5]} intensity={1} angle={0.5} penumbra={1} color="#a5b4fc" />
+        <pointLight position={[0, -2, 2]} intensity={0.5} color="#c084fc" />
+        
+        {props.settings.model === 'Point-E' ? (
+             <Stars radius={100} depth={50} count={5000} factor={4} saturation={0} fade speed={1} />
+        ) : (
+             <Environment preset="city" blur={0.7} background={false} />
+        )}
 
-        <Environment preset="city" />
-        
-        <React.Suspense fallback={null}>
-            {props.depthMap ? (
-                 <GeneratedMesh {...props} />
-            ) : (
-                <PlaneFallback originalImage={props.originalImage} />
-            )}
-        </React.Suspense>
-        
-        <gridHelper args={[20, 20, 0x444444, 0x222222]} position={[0, -2, 0]} />
+        <group position={[0, 0, 0]}>
+            <React.Suspense fallback={null}>
+                {props.depthMap ? (
+                    <ModelRenderer {...props} />
+                ) : (
+                    <PlaneFallback originalImage={props.originalImage} />
+                )}
+            </React.Suspense>
+        </group>
+
+        <ContactShadows position={[0, -2.5, 0]} opacity={0.6} scale={10} blur={2.5} far={4} color="#000000" />
+        <gridHelper args={[20, 20, 0x1e1b4b, 0x000000]} position={[0, -2.5, 0]} />
       </Canvas>
-      
-      <div className="absolute bottom-4 right-4 text-xs text-slate-500 pointer-events-none">
-        Powered by Three.js & Gemini
-      </div>
     </div>
   );
 };
@@ -289,8 +324,8 @@ const PlaneFallback = ({ originalImage }: { originalImage: string }) => {
     const texture = useMemo(() => new THREE.TextureLoader().load(originalImage), [originalImage]);
     return (
         <mesh>
-            <planeGeometry args={[3, 3]} />
-            <meshBasicMaterial map={texture} transparent opacity={0.8} />
+            <planeGeometry args={[2, 2]} />
+            <meshBasicMaterial map={texture} transparent opacity={0.3} side={THREE.DoubleSide} />
         </mesh>
     )
 }
