@@ -4,27 +4,27 @@ import { NeuralModel } from "../types";
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 const getModelPrompt = (model: NeuralModel) => {
-  const base = "Generate a high-fidelity 16-bit grayscale volumetric depth map. CRITICAL: This is for CYLINDRICAL 3D RECONSTRUCTION. The center of the object should be white (closest), and the sides must fade to black (furthest) to wrap around a central axis. ";
+  const base = "Generate a high-fidelity 16-bit grayscale depth map. CRITICAL: For 3D INFLATION. The center of the object must be WHITE (nearest). The edges of the silhouette must smoothly fade to BLACK (farthest/zero depth). ";
   
   switch(model) {
     case 'TripoSR':
-        return base + "Style: TripoSR. Sharp object boundaries, solid volume. Ensure limb separation is distinct in depth values.";
+        return base + "Style: TripoSR. GAME-READY ASSET MODE. Remove all background noise. Isolate the object completely. Edges must be sharp in the alpha channel but depth must taper to black to ensure a watertight mesh.";
     case 'Trellis':
-        return base + "Style: Microsoft Trellis. Geometric accuracy. Planar surfaces should have uniform gray values.";
+        return base + "Style: Microsoft Trellis. Geometric precision. Planar surfaces should have uniform depth.";
     case 'InstantMesh':
-        return base + "Style: InstantMesh. Smooth curvature for organic wrapping. Minimal noise.";
+        return base + "Style: InstantMesh. Smooth, noise-free gradients for rapid prototyping.";
     case 'Hunyuan3D':
-        return base + "Style: Hunyuan3D v2.5. High frequency surface details (scales, cloth texture) overlaid on the volumetric base.";
+        return base + "Style: Hunyuan3D v2.5. Detail-oriented. Texture bumps should be visible in depth.";
     case 'Point-E':
-        return base + "Style: Point-E. Density-based depth. Focus on the core mass of the object.";
+        return base + "Style: Point-E. Volumetric density representation.";
     case 'DreamFusion':
-        return base + "Style: NeRF/DreamFusion. Smooth gradients representing light falloff on a 3D volume.";
+        return base + "Style: NeRF/DreamFusion. Soft lighting falloff.";
     case 'StableDiffusion3D':
-        return base + "Style: SD-3D. Multi-view consistency. The depth edges must perfectly align with a potential back-view.";
+        return base + "Style: SD-3D. Multi-view consistency focus.";
     case '3DTopia':
-        return base + "Style: 3DTopia. Hybrid shape-texture focus. Clear separation between foreground object and black background.";
+        return base + "Style: 3DTopia. Hybrid shape-texture fidelity.";
     default:
-        return base + "Standard cylindrical depth map.";
+        return base + "Standard depth map.";
   }
 };
 
@@ -98,7 +98,7 @@ export const generateBackView = async (frontImageBase64: string): Promise<string
         contents: {
             parts: [
                 { inlineData: { mimeType: 'image/png', data: base64Data } },
-                { text: "Generate the BACK VIEW of this character/object. CRITICAL: This is for a 3D TEXTURE MAP. It must align perfectly with the front view's silhouette. Maintain the same pose, scale, and lighting. Pure black background." }
+                { text: "Generate the BACK VIEW of this character/object. Maintain exact silhouette and pose for 3D texture mapping. Pure black background. 3D Game Asset Style." }
             ]
         },
         config: { temperature: 0.4 }

@@ -54,9 +54,6 @@ function App() {
     setProgress(5);
     
     try {
-        // --- PARALLEL EXECUTION PIPELINE ---
-        // We start Front Depth and Back Image generation AT THE SAME TIME
-        
         const depthTask = generateDepthMap(originalImage, settings.model)
             .then(res => {
                 setFrontDepthMap(res);
@@ -68,8 +65,7 @@ function App() {
             .then(async (res) => {
                 setBackImage(res);
                 setProgress(prev => Math.min(prev + 20, 90));
-                // Chain: Generate Back Depth immediately after Back Image is ready
-                setStatus({ status: 'calculating_volume', message: 'PROCESSING BACK VOLUME...' });
+                setStatus({ status: 'calculating_volume', message: `EXTRUDING ${settings.model} VOLUME...` });
                 const bDepth = await generateDepthMap(res, settings.model);
                 setBackDepthMap(bDepth);
                 setProgress(prev => Math.min(prev + 30, 95));
@@ -90,7 +86,6 @@ function App() {
   const handleDownload = async () => {
     if (!meshRef.current) return;
     try {
-        // Basic Export wrapper
         const exporter = new GLTFExporter();
         const obj = meshRef.current;
         obj.updateMatrixWorld();
@@ -102,7 +97,7 @@ function App() {
                 const url = URL.createObjectURL(blob);
                 const link = document.createElement('a');
                 link.href = url;
-                link.download = `aetherforge_${settings.model}.glb`;
+                link.download = `aetherforge_${settings.model}_v2.glb`;
                 link.click();
             },
             (err) => console.error("Export Error:", err),
@@ -132,8 +127,8 @@ function App() {
                 AETHERFORGE
                 </h1>
                 <span className="text-[0.6rem] tracking-[0.4em] text-indigo-500 uppercase flex items-center gap-2">
-                   <span className="w-1 h-1 bg-green-400 rounded-full"></span>
-                   Multi-Model Inference
+                   <span className={`w-1 h-1 rounded-full ${settings.model === 'TripoSR' ? 'bg-green-400 animate-pulse' : 'bg-indigo-400'}`}></span>
+                   {settings.model} Active
                 </span>
             </div>
           </div>
