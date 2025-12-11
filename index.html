@@ -25,7 +25,7 @@
         background-size: 100% 100%, 40px 40px, 40px 40px;
         color: #e2e8f0;
         margin: 0;
-        overflow: hidden;
+        /* Removed overflow: hidden to fix scrolling issues on mobile */
       }
 
       /* Custom Scrollbar */
@@ -73,6 +73,7 @@
     "three": "https://esm.sh/three@0.165.0",
     "three/": "https://esm.sh/three@0.165.0/",
     "@google/genai": "https://esm.sh/@google/genai@^1.32.0",
+    "@gradio/client": "https://esm.sh/@gradio/client@1.2.0",
     "@react-three/fiber": "https://esm.sh/@react-three/fiber@8.16.8?external=three,react,react-dom",
     "@react-three/drei": "https://esm.sh/@react-three/drei@9.106.0?external=three,react,react-dom,@react-three/fiber",
     "three-stdlib": "https://esm.sh/three-stdlib@2.30.4?external=three",

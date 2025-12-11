@@ -5,19 +5,30 @@ export interface GenerationState {
 }
 
 export type NeuralModel = 
-  | 'TripoSR' 
   | 'Trellis' 
+  | 'StableFast3D'
+  | 'TripoSR' 
   | 'InstantMesh' 
   | 'Hunyuan3D' 
-  | 'Point-E' 
-  | 'DreamFusion' 
-  | 'StableDiffusion3D' 
-  | '3DTopia';
+  | 'Point-E';
+
+export type EnvironmentType = 'city' | 'studio' | 'sunset' | 'dawn' | 'night';
 
 export interface ModelSettings {
   model: NeuralModel;
-  apiKey: string;
+  hfToken: string;
   wireframe: boolean;
   meshColor: string;
   autoRotate: boolean;
+  environment: EnvironmentType;
+  showGrid: boolean;
+  seed: number;
+}
+
+export interface HistoryItem {
+  id: string;
+  thumbnail: string;
+  modelUrl: string;
+  modelType: NeuralModel;
+  timestamp: number;
 }

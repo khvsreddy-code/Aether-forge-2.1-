@@ -1,35 +1,49 @@
 import React from 'react';
-import { ModelSettings, NeuralModel } from '../types';
-import { Cpu, RotateCw, Key, Download, Network, Box } from 'lucide-react';
+import { ModelSettings, NeuralModel, EnvironmentType } from '../types';
+import { Cpu, RotateCw, Key, Download, Network, Database, Layers, Sun, Grid3X3, History, Dna } from 'lucide-react';
 
 interface ControlsProps {
   settings: ModelSettings;
   updateSetting: <K extends keyof ModelSettings>(key: K, value: ModelSettings[K]) => void;
   onDownload: () => void;
   hasModel: boolean;
+  toggleHistory: () => void;
 }
 
-const MODELS: {id: NeuralModel, name: string, desc: string}[] = [
-  { id: 'TripoSR', name: 'TripoSR', desc: 'Fastest / Game Ready (API)' },
-  { id: 'Trellis', name: 'Trellis', desc: 'Structured Geometry' },
-  { id: 'InstantMesh', name: 'InstantMesh', desc: 'Rapid Prototyping' },
-  { id: 'Hunyuan3D', name: 'Hunyuan3D', desc: 'High Fidelity' },
-  { id: 'Point-E', name: 'Point-E', desc: 'Point Cloud' },
+const MODELS: {id: NeuralModel, name: string, desc: string, isFree: boolean}[] = [
+  { id: 'Trellis', name: 'Trellis', desc: 'Microsoft | Geometry', isFree: true },
+  { id: 'Hunyuan3D', name: 'Hunyuan3D 2.1', desc: 'Tencent | High Fidelity', isFree: true },
+  { id: 'StableFast3D', name: 'StableFast3D', desc: 'Stability AI | Ultra Fast', isFree: true },
+  { id: 'TripoSR', name: 'TripoSR', desc: 'Stability AI | Fast', isFree: true },
+  { id: 'InstantMesh', name: 'InstantMesh', desc: 'Tencent ARC | HQ', isFree: true },
 ];
 
-export const Controls: React.FC<ControlsProps> = ({ settings, updateSetting, onDownload, hasModel }) => {
+const ENVIRONMENTS: {id: EnvironmentType, name: string}[] = [
+    { id: 'studio', name: 'Studio Dark' },
+    { id: 'city', name: 'Cyber City' },
+    { id: 'sunset', name: 'Sunset' },
+    { id: 'dawn', name: 'Dawn' },
+    { id: 'night', name: 'Night' },
+];
+
+export const Controls: React.FC<ControlsProps> = ({ settings, updateSetting, onDownload, hasModel, toggleHistory }) => {
   return (
-    <div className="bg-black/80 backdrop-blur-md p-6 border border-indigo-500/30 clip-hex relative overflow-hidden flex flex-col gap-6">
+    <div className="bg-black/80 backdrop-blur-md p-6 border border-indigo-500/30 clip-hex relative flex flex-col gap-5">
       
-      <div className="flex items-center gap-2 border-b border-indigo-900/50 pb-2">
-        <Cpu className="w-4 h-4 text-indigo-400" />
-        <h2 className="text-md font-cyber text-indigo-100 tracking-wider uppercase">Inference Config</h2>
+      <div className="flex items-center justify-between border-b border-indigo-900/50 pb-2">
+        <div className="flex items-center gap-2">
+            <Cpu className="w-4 h-4 text-indigo-400" />
+            <h2 className="text-md font-cyber text-indigo-100 tracking-wider uppercase">Config</h2>
+        </div>
+        <button onClick={toggleHistory} className="text-xs text-indigo-400 hover:text-white flex items-center gap-1">
+            <History className="w-3 h-3" /> HISTORY
+        </button>
       </div>
 
       {/* Model Selector */}
-      <div className="space-y-3">
-         <label className="text-xs font-mono text-indigo-400 flex items-center gap-2 uppercase">
-             <Network className="w-3 h-3" /> Target_Model
+      <div className="space-y-2">
+         <label className="text-[10px] font-mono text-indigo-400 flex items-center gap-2 uppercase">
+             <Network className="w-3 h-3" /> Neural Model
          </label>
          <div className="grid grid-cols-1 gap-2">
             <select 
@@ -38,52 +52,81 @@ export const Controls: React.FC<ControlsProps> = ({ settings, updateSetting, onD
                 className="w-full bg-indigo-950/30 border border-indigo-600/50 text-indigo-100 text-xs font-mono p-2 rounded-none focus:outline-none focus:border-indigo-400 uppercase cursor-pointer"
             >
                 {MODELS.map(m => (
-                    <option key={m.id} value={m.id} className="bg-black">{m.name}</option>
+                    <option key={m.id} value={m.id} className="bg-black">
+                        {m.name}
+                    </option>
                 ))}
             </select>
-            <div className="text-[10px] text-indigo-400/60 font-mono">
+            <div className="flex items-center gap-2 text-[10px] text-indigo-400/60 font-mono">
+                <div className="w-1.5 h-1.5 rounded-full bg-green-500"></div>
                 {MODELS.find(m => m.id === settings.model)?.desc}
             </div>
          </div>
       </div>
 
-      {/* API Key Input */}
-      <div className="space-y-3">
-        <label className="text-xs font-mono text-indigo-400 flex items-center gap-2 uppercase">
-             <Key className="w-3 h-3" /> API_Credential
+      {/* Seed Input (Visible for diffusion-based models) */}
+      {(settings.model === 'Trellis' || settings.model === 'Hunyuan3D') && (
+        <div className="space-y-2">
+           <label className="text-[10px] font-mono text-indigo-400 flex items-center gap-2 uppercase">
+               <Dna className="w-3 h-3" /> Random Seed
+           </label>
+           <input 
+              type="number" 
+              value={settings.seed}
+              onChange={(e) => updateSetting('seed', parseInt(e.target.value) || 0)}
+              className="w-full bg-indigo-950/30 border border-indigo-600/50 text-indigo-100 text-xs font-mono p-2 focus:border-indigo-400 outline-none"
+           />
+        </div>
+      )}
+
+      {/* Environment Selector */}
+      <div className="space-y-2">
+         <label className="text-[10px] font-mono text-indigo-400 flex items-center gap-2 uppercase">
+             <Sun className="w-3 h-3" /> Lighting Env
+         </label>
+         <select 
+            value={settings.environment}
+            onChange={(e) => updateSetting('environment', e.target.value as EnvironmentType)}
+            className="w-full bg-indigo-950/30 border border-indigo-600/50 text-indigo-100 text-xs font-mono p-2 rounded-none focus:outline-none focus:border-indigo-400 uppercase cursor-pointer"
+        >
+            {ENVIRONMENTS.map(e => (
+                <option key={e.id} value={e.id} className="bg-black">{e.name}</option>
+            ))}
+        </select>
+      </div>
+
+      {/* Toggles Grid */}
+      <div className="grid grid-cols-2 gap-2 pt-2">
+          <button
+            onClick={() => updateSetting('wireframe', !settings.wireframe)}
+            className={`flex items-center justify-center gap-2 p-2 text-[10px] border ${settings.wireframe ? 'bg-indigo-600/20 border-indigo-400 text-white' : 'bg-transparent border-indigo-900 text-indigo-500'}`}
+          >
+              <Layers className="w-3 h-3" /> WIREFRAME
+          </button>
+          <button
+            onClick={() => updateSetting('showGrid', !settings.showGrid)}
+            className={`flex items-center justify-center gap-2 p-2 text-[10px] border ${settings.showGrid ? 'bg-indigo-600/20 border-indigo-400 text-white' : 'bg-transparent border-indigo-900 text-indigo-500'}`}
+          >
+              <Grid3X3 className="w-3 h-3" /> GRID
+          </button>
+      </div>
+
+      {/* HF Token Input */}
+      <div className="space-y-2 pt-2 border-t border-indigo-900/30">
+        <label className="text-[10px] font-mono text-indigo-400 flex items-center justify-between uppercase">
+             <div className="flex items-center gap-2"><Key className="w-3 h-3" /> HF Token (Optional)</div>
+             {settings.hfToken.length > 5 && <span className="text-green-500">ACTIVE</span>}
          </label>
          <input 
             type="password" 
-            placeholder="sk-..."
-            value={settings.apiKey}
-            onChange={(e) => updateSetting('apiKey', e.target.value)}
+            placeholder="hf_..."
+            value={settings.hfToken}
+            onChange={(e) => updateSetting('hfToken', e.target.value)}
             className="w-full bg-black/50 border border-indigo-800 text-indigo-200 text-xs p-2 focus:border-indigo-400 outline-none font-mono tracking-tighter"
          />
-         <p className="text-[9px] text-gray-500">
-             *Required for real inference. Get key at {settings.model === 'TripoSR' ? 'platform.tripo3d.ai' : 'provider dashboard'}
-         </p>
       </div>
 
-      {/* Viewer Options */}
-      <div className="space-y-3 pt-4 border-t border-indigo-900/30">
-        <div className="flex items-center justify-between">
-            <label className="text-xs font-mono text-indigo-300 flex items-center gap-2 cursor-pointer uppercase">
-            <RotateCw className="w-3 h-3" /> Auto_Turntable
-            </label>
-            <button
-            onClick={() => updateSetting('autoRotate', !settings.autoRotate)}
-            className={`w-8 h-4 border transition-all duration-200 relative ${
-                settings.autoRotate ? 'bg-indigo-900/50 border-indigo-400' : 'bg-transparent border-indigo-900'
-            }`}
-            >
-            <div className={`absolute top-0.5 bottom-0.5 w-3 bg-indigo-400 transition-all duration-200 ${
-                settings.autoRotate ? 'right-0.5' : 'left-0.5 opacity-50'
-            }`} />
-            </button>
-        </div>
-      </div>
-
-      <div className="pt-4 border-t border-indigo-900/50 mt-auto">
+      <div className="pt-4 mt-auto">
         <button
             onClick={onDownload}
             disabled={!hasModel}

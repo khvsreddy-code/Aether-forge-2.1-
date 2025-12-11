@@ -11,6 +11,7 @@
   "dependencies": {
     "three": "0.165.0",
     "@google/genai": "^1.32.0",
+    "@gradio/client": "1.2.0",
     "@react-three/fiber": "8.16.8",
     "@react-three/drei": "9.106.0",
     "three-stdlib": "2.30.4",
